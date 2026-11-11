@@ -10,6 +10,30 @@
 
 ## Topology
 
+```mermaid
+graph LR
+    subgraph LAN["LAN — 10.0.1.0/24"]
+        h1["h1<br/>10.0.1.11/24<br/>default via 10.0.1.1"]
+        h2["h2<br/>10.0.1.12/24<br/>default via 10.0.1.1"]
+        s1(["s1"])
+    end
+
+    r1["r1 — Linux router<br/>eth1: 10.0.1.1/24<br/>eth2: 10.0.2.1/24"]
+
+    subgraph SRV["Server — 10.0.2.0/24"]
+        s2(["s2"])
+        web["web<br/>10.0.2.10/24<br/>HTTP :80 · /big.bin 2 MB"]
+    end
+
+    h1 --- s1
+    h2 --- s1
+    s1 --- r1
+    r1 --- s2
+    s2 --- web
+```
+
+Plain-text version of the same graph:
+
     h1 10.0.1.11 \                                  / web 10.0.2.10 (HTTP :80, /big.bin 2MB)
                    s1 -- r1 (10.0.1.1 | 10.0.2.1) -- s2
     h2 10.0.1.12 /          Linux router
