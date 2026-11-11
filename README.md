@@ -32,12 +32,6 @@ graph LR
     s2 --- web
 ```
 
-Plain-text version of the same graph:
-
-    h1 10.0.1.11 \                                  / web 10.0.2.10 (HTTP :80, /big.bin 2MB)
-                   s1 -- r1 (10.0.1.1 | 10.0.2.1) -- s2
-    h2 10.0.1.12 /          Linux router
-
 ## Run
 
     sudo python3 lab.py --list
