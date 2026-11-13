@@ -43,6 +43,8 @@ graph LR
 
 ## Run
 
+See [USAGE.md](USAGE.md) for a concise scenario reference and common first checks.
+
     sudo python3 lab.py --list
     sudo python3 lab.py --scenario healthy          # learn the baseline first
     sudo python3 lab.py --scenario wrong_gateway --hint

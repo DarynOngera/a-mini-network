@@ -12,8 +12,9 @@ Usage (needs root):
    sudo python3 lab.py --list
    sudo python3 lab.py --scenario healthy
    sudo python3 lab.py --scenario no_forwarding
-   sudo python3 lab.py --scenario mystery        # random fault, answer hidden
-   sudo python3 lab.py --scenario mystery --reveal   # (after you're done) show answer
+   sudo python3 lab.py --scenario mystery --seed 42  # reproducible random fault
+   python3 lab.py --reveal                          # show the last mystery answer
+   sudo python3 lab.py --check                       # verify the healthy lab
 
 Each scenario injects ONE fault, then drops you into the Mininet CLI.
 Inside the CLI, run commands like:  h1 ping -c3 web   |  h1 curl -m5 http://10.0.2.10/
@@ -66,7 +67,8 @@ def start_services(net):
     web = net["web"]
     web.cmd("mkdir -p /tmp/www && head -c 2000000 /dev/urandom > /tmp/www/big.bin "
             "&& echo 'hello from web' > /tmp/www/index.html")
-    web.cmd("cd /tmp/www && python3 -m http.server 80 >/tmp/web_http.log 2>&1 &")
+    web.cmd("(cd /tmp/www && exec python3 -m http.server 80 >/tmp/web_http.log 2>&1) "
+            "& echo $! > /tmp/web_http.pid")
 
 
 # ---------------------------------------------------------------- scenarios
@@ -101,7 +103,8 @@ def firewall_reject(net):
 
 
 def service_down(net):
-    net["web"].cmd("pkill -f 'http.server'")
+    net["web"].cmd("test -s /tmp/web_http.pid && kill $(cat /tmp/web_http.pid) "
+                   "2>/dev/null || true")
     return ("HTTP server process on web is not running",
             "ping works, HTTP fails instantly with 'connection refused'.")
 
@@ -157,12 +160,44 @@ SCENARIOS = {
 }
 
 
+def command_succeeds(node, command):
+    """Run a command in a namespace and return its shell exit status."""
+    marker = "__MININET_LAB_STATUS:"
+    output = node.cmd(f"({command}) >/dev/null 2>&1; printf '{marker}%s\\n' $?")
+    return output.rstrip().endswith(f"{marker}0")
+
+
+def health_check(net):
+    """Check the healthy topology without opening the interactive CLI."""
+    checks = {
+        "h1 can reach h2": ("h1", "ping -c1 -W1 10.0.1.12"),
+        "h1 can reach r1": ("h1", "ping -c1 -W1 10.0.1.1"),
+        "h1 can reach web": ("h1", "ping -c1 -W1 10.0.2.10"),
+        "web HTTP responds": (
+            "h1",
+            "status=1; for attempt in $(seq 1 10); do "
+            "if curl -fsS --connect-timeout 1 http://10.0.2.10/; then status=0; break; fi; "
+            "sleep 0.1; done; exit $status",
+        ),
+    }
+    failed = []
+    for description, (node_name, command) in checks.items():
+        if command_succeeds(net[node_name], command):
+            info(f"*** PASS: {description}\\n")
+        else:
+            info(f"*** FAIL: {description}\\n")
+            failed.append(description)
+    return not failed
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scenario", default="healthy", help="scenario name, or 'mystery'")
     ap.add_argument("--list", action="store_true", help="list scenarios and exit")
     ap.add_argument("--hint", action="store_true", help="print the symptom hint")
     ap.add_argument("--reveal", action="store_true", help="print the last mystery answer and exit")
+    ap.add_argument("--seed", type=int, help="seed used to reproduce a mystery scenario")
+    ap.add_argument("--check", action="store_true", help="verify healthy connectivity and HTTP, then exit")
     args = ap.parse_args()
 
     if args.list:
@@ -171,39 +206,47 @@ def main():
         return
     if args.reveal:
         print(open(ANSWER_FILE).read() if os.path.exists(ANSWER_FILE) else "No mystery answer saved.")
-        return
+        return 0
     if os.geteuid() != 0:
         sys.exit("Run with sudo.")
 
     name = args.scenario
     mystery = name == "mystery"
     if mystery:
-        name = random.choice([n for n in SCENARIOS if n != "healthy"])
+        seed = args.seed if args.seed is not None else random.SystemRandom().randrange(2**32)
+        name = random.Random(seed).choice([n for n in SCENARIOS if n != "healthy"])
     if name not in SCENARIOS:
         sys.exit("Unknown scenario. Use --list.")
 
     setLogLevel("info")
     net = build()
-    net.start()
-    start_services(net)
-    cause, symptom = SCENARIOS[name](net)
+    try:
+        net.start()
+        start_services(net)
 
-    if mystery:
-        with open(ANSWER_FILE, "w") as f:
-            f.write(f"{name}: {cause}\n")
-        info("*** Mystery fault injected. Diagnose it, then run: sudo python3 lab.py --reveal\n")
-    else:
-        info(f"*** Scenario: {name}\n")
-    if args.hint:
-        info(f"*** Symptom: {symptom}\n")
-    if not mystery and name != "healthy":
-        info("*** (cause hidden until you exit; shown below on exit)\n")
+        if args.check:
+            return 0 if health_check(net) else 1
 
-    CLI(net)
-    if not mystery:
-        info(f"*** Cause was: {cause}\n")
-    net.stop()
+        cause, symptom = SCENARIOS[name](net)
+        if mystery:
+            with open(ANSWER_FILE, "w") as f:
+                f.write(f"seed {seed}; {name}: {cause}\n")
+            info("*** Mystery fault injected. Diagnose it, then run: python3 lab.py --reveal\n")
+            info(f"*** Replay with: sudo python3 lab.py --scenario mystery --seed {seed}\n")
+        else:
+            info(f"*** Scenario: {name}\n")
+        if args.hint:
+            info(f"*** Symptom: {symptom}\n")
+        if not mystery and name != "healthy":
+            info("*** (cause hidden until you exit; shown below on exit)\n")
+
+        CLI(net)
+        if not mystery:
+            info(f"*** Cause was: {cause}\n")
+        return 0
+    finally:
+        net.stop()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
